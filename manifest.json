@@ -1,0 +1,16 @@
+{
+  "addons": [{
+    "id": "lsp_copilot",
+    "description": "Copilot for Lite XL.",
+    "path": "./init.lua",
+    "version": "1.25.1",
+    "files": [
+      {
+        "url": "https://github.com/github/copilot.vim/archive/refs/tags/v1.25.1.tar.gz",
+        "arch": ["x86_64-linux", "aarch64-linux", "x86_64-darwin", "aarch64-darwin", "x86_64-windows", "x86-windows"],
+        "checksum": "1c2c61da8c0c803f12d30503fdc25e8d70f41b56faf37e6c7835d9316b3198c1"
+      }
+    ],
+    "dependencies": { "nodejs": {}, "lsp": {} }
+  }]
+}
