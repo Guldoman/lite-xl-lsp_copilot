@@ -22,7 +22,10 @@ local logged_in = false
 local initialized = false
 
 local last_panel_id = 0
-local panels = setmetatable({}, {__mode = "v"})
+---@type table<string, core.docview>
+local panel_docviews = setmetatable({}, {__mode = "v"})
+---@type table<core.docview, table>
+local panels = setmetatable({}, {__mode = "k"})
 
 local function _check_status(result)
   logged_in = false
@@ -42,6 +45,23 @@ local function check_status(server, callback)
       callback(response.result)
     end
   })
+end
+
+local function get_panel_text(panel_data)
+  local text = {}
+  if not panel_data.done then
+    table.insert(text, string.format("%sLoading solutions %d/%d", panel_data.comment, #panel_data.completions, panel_data.target))
+    table.insert(text, string.format("\n%s---------------------------------------------\n\n", panel_data.comment))
+  end
+  for i, c in ipairs(panel_data.completions) do
+    table.insert(text, string.format("%sSolution %d - Score %f:\n", panel_data.comment, i, c.score))
+    table.insert(text, c.displayText)
+    table.insert(text, string.format("\n%s---------------------------------------------\n\n", panel_data.comment))
+  end
+  if panel_data.done then
+    table.insert(text, string.format("%sDone with message %s.", panel_data.comment, panel_data.done))
+  end
+  return table.concat(text, "\n")
 end
 
 lsp.add_server(common.merge({
@@ -65,17 +85,45 @@ lsp.add_server(common.merge({
     end)
 
     server:add_message_listener("PanelSolution", function(server, response)
-      if panels[response.panelId] then
-        local dv = panels[response.panelId]
-        dv.doc:text_input(string.format("Score: %d\n\n%s\n\n--------------------------------------\n", response.score, response.completionText))
+      local dv = panel_docviews[response.panelId]
+      if not dv then return end
+
+      local panel = panels[dv]
+
+      if panel.done then
+        core.warn("[LSP/Copilot] The Panel was marked as done, but more completions arrived.")
       end
+      for _, v in ipairs(panel.completions) do
+        if v.solutionId == response.solutionId then
+          core.warn("[LSP/Copilot] Duplicate Panel solution received.")
+          return
+        end
+      end
+
+      table.insert(panel.completions, response)
+
+      local line1, col1 = dv.doc:get_selection()
+      dv.doc:set_selection(0, 0, math.huge, math.huge)
+      dv.doc:text_input(get_panel_text(panel))
+      dv.doc:set_selection(line1, col1)
     end)
 
     server:add_message_listener("PanelSolutionsDone", function(server, response)
-      if panels[response.panelId] then
-        local dv = panels[response.panelId]
-        dv.doc:text_input(string.format("Done with message %s.", response.status))
+      local dv = panel_docviews[response.panelId]
+      if not dv then return end
+
+      local panel = panels[dv]
+
+      if panel.done then
+        core.warn("[LSP/Copilot] The Panel was marked as done multiple times.")
       end
+
+      panel.done = response.status
+
+      local line1, col1 = dv.doc:get_selection()
+      dv.doc:set_selection(0, 0, math.huge, math.huge)
+      dv.doc:text_input(get_panel_text(panel))
+      dv.doc:set_selection(line1, col1)
     end)
   end
 }, config.plugins.lsp_copilot or {}))
@@ -283,7 +331,16 @@ local function get_panel_completions(server, doc)
       local node = core.root_view:get_active_node()
       node:split("right")
       local dv = core.root_view:open_doc(core.open_doc())
-      panels[tostring(panel_id)] = dv
+      dv.doc.syntax = doc.syntax
+      panel_docviews[tostring(panel_id)] = dv
+      panels[dv] = {
+        completions = { },
+        done = false,
+        target = result.solutionCountTarget,
+        comment = dv.doc.syntax.comment and dv.doc.syntax.comment .. " " or ""
+      }
+      dv.doc:set_selection(0, 0, math.huge, math.huge)
+      dv.doc:text_input(get_panel_text(panels[dv]))
     end
   })
 end
