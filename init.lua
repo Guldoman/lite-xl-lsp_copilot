@@ -145,29 +145,37 @@ local function error_code_to_name(code)
   return string.format("Unknown - %d", icode)
 end
 
+local function get_doc_param(doc, line1, col1)
+  if not line1 then
+    line1, col1, _, _ = doc:get_selection()
+  end
+  local request = get_buffer_position_params(doc, line1, col1)
+  local indent_type, indent_size, _ = doc:get_indent_info()
+  return {
+    position = {
+      line = request.position.line,
+      character = request.position.character,
+    },
+    uri = request.textDocument.uri,
+    version = doc.lsp_version or 1,
+    insertSpaces = indent_type == "soft",
+    tabSize = indent_size,
+    indentSize = indent_size
+    --[[
+    languageId = copilot#doc#LanguageForFileType(getbufvar(bufnr, '&filetype')),
+  --]]
+  }
+end
+
 local function get_completions(server, doc)
   if not doc.lsp_open then
     return
   end
   local line1, col1, line2, col2 = doc:get_selection()
   if line1 == line2 and col1 == col2 then
-    local request = get_buffer_position_params(doc, line1, col1)
     server:push_request("getCompletionsCycling", {
       params = {
-        doc = {
-          position = {
-            line = request.position.line,
-            character = request.position.character,
-          },
-          uri = request.textDocument.uri,
-          version = doc.lsp_version or 1,
-          --[[
-          insertSpaces = &expandtab ? v:true : v:false,
-          tabSize = shiftwidth(),
-          indentSize = shiftwidth(),
-          languageId = copilot#doc#LanguageForFileType(getbufvar(bufnr, '&filetype')),
-        --]]
-        }
+        doc = get_doc_param(doc, line1, col1)
       },
       overwrite = true,
       callback = function(_, response)
