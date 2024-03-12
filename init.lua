@@ -4,6 +4,8 @@ local common = require "core.common"
 local config = require "core.config"
 local command = require "core.command"
 
+local DocView = require "core.docview"
+
 local autocomplete = require "plugins.autocomplete"
 local translate = require "core.doc.translate"
 
@@ -12,12 +14,15 @@ local util = require "plugins.lsp.util"
 local Server = require "plugins.lsp.server"
 
 local lsp = require "plugins.lsp"
-local node = require "libraries.nodejs"
+local nodejs = require "libraries.nodejs"
 
 local installed_path = USERDIR .. PATHSEP .. "plugins" .. PATHSEP .. "lsp_copilot" .. PATHSEP .. "copilot.vim-1.25.1" .. PATHSEP .. "dist" .. PATHSEP .. "agent.js"
 
 local logged_in = false
 local initialized = false
+
+local last_panel_id = 0
+local panels = setmetatable({}, {__mode = "v"})
 
 local function _check_status(result)
   logged_in = false
@@ -43,7 +48,7 @@ lsp.add_server(common.merge({
   name = "copilot.vim",
   language = "Any",
   file_patterns = { ".*" },
-  command = { node.path_bin, installed_path, "--stdio" },
+  command = { nodejs.path_bin, installed_path, "--stdio" },
   verbose = true,
   on_start = function(server)
     server:add_event_listener("initialized", function(_)
@@ -57,6 +62,20 @@ lsp.add_server(common.merge({
           core.error("[LSP/Copilot] Unknown status: [%s].", result.status)
         end
       end)
+    end)
+
+    server:add_message_listener("PanelSolution", function(server, response)
+      if panels[response.panelId] then
+        local dv = panels[response.panelId]
+        dv.doc:text_input(string.format("Score: %d\n\n%s\n\n--------------------------------------\n", response.score, response.completionText))
+      end
+    end)
+
+    server:add_message_listener("PanelSolutionsDone", function(server, response)
+      if panels[response.panelId] then
+        local dv = panels[response.panelId]
+        dv.doc:text_input(string.format("Done with message %s.", response.status))
+      end
     end)
   end
 }, config.plugins.lsp_copilot or {}))
@@ -238,6 +257,36 @@ local function get_completions(server, doc)
   end
 end
 
+local function get_panel_completions(server, doc)
+  local panel_id = last_panel_id + 1
+  last_panel_id = last_panel_id + 1
+  local line1, col1, _, _ = doc:get_selection()
+  local doc_param = get_doc_param(doc, line1, col1)
+  server:push_request("getPanelCompletions", {
+    params = {
+      doc = doc_param,
+      position = {
+        line = doc_param.position.line,
+        character = doc_param.position.character,
+      },
+      panelId = tostring(panel_id)
+    },
+    overwrite = true,
+    callback = function(_, response)
+      if response.error then
+        core.error("[LSP/Copilot] Error while getting completions: %s\n%s",
+          error_code_to_name(response.error.code), response.error.message)
+        return
+      end
+      local result = response.result
+      core.log("[LSP/Copilot] Looking for %d completions.", result.solutionCountTarget)
+      local node = core.root_view:get_active_node()
+      node:split("right")
+      local dv = core.root_view:open_doc(core.open_doc())
+      panels[tostring(panel_id)] = dv
+    end
+  })
+end
 
 command.add(function() return initialized and not is_logged_in() end, {
   ["copilot:sign-in"] = function()
@@ -302,6 +351,19 @@ command.add(is_logged_in, {
         end
       end
     })
+  end
+})
+
+command.add(function()
+    local av = core.active_view
+    if not av or not av:is(DocView) then return false end
+    local doc = av.doc
+    if not doc.lsp_open then return false end
+    return true, doc
+  end, {
+  ["copilot:get-panel-completions"] = function(doc)
+    local server = get_server()
+    get_panel_completions(server, doc)
   end
 })
 
