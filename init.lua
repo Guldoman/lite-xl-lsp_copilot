@@ -179,17 +179,12 @@ local function apply_edit(server, doc, text_edit, _, update_cursor_position)
 
   if text_edit.range then
     range = text_edit.range
-  elseif text_edit.insert then
-    range = text_edit.insert
-  elseif text_edit.replace then
-    range = text_edit.replace
   end
 
   if not range then return false end
 
   local text = text_edit.newText
   local line1, col1, line2, col2
-  local current_text = ""
 
   if
     not server.capabilities.positionEncoding
@@ -205,13 +200,7 @@ local function apply_edit(server, doc, text_edit, _, update_cursor_position)
     )
   end
 
-  if lsp.in_trigger then
-    local cline2, ccol2 = doc:get_selection()
-    local cline1, ccol1 = doc:position_offset(line2, col2, translate.start_of_word)
-    current_text = doc:get_text(cline1, ccol1, cline2, ccol2)
-  end
-
-  doc:remove(line1, col1, line2, col2+#current_text)
+  doc:remove(line1, col1, line2, col2)
 
   doc:insert(line1, col1, text)
   if update_cursor_position then
@@ -270,6 +259,21 @@ local function get_doc_param(doc, line1, col1)
   }
 end
 
+local function make_closable(fn)
+  return setmetatable({}, {__close = fn})
+end
+
+-- `update_suggestions` in `autocomplete` filters out our completions with `common.fuzzy_match`.
+-- We don't want that, as we're using the displayText as label for entries, and in some cases
+-- they get filtered out (for example while writing, in the middle of a word).
+local function autocomplete_complete_with_fix(...)
+  local fuzzy_fn = common.fuzzy_match
+  local restore_fuzzy_fn <close> = make_closable(function() common.fuzzy_match = fuzzy_fn end)
+  common.fuzzy_match = function(items) return items end
+  autocomplete.complete(...)
+end
+
+local autocomplete_is_copilot = false
 function copilot.get_completions(server, doc)
   if not doc.lsp_open then
     return
@@ -295,7 +299,7 @@ function copilot.get_completions(server, doc)
           items = {}
         }
 
-        local accepted = false
+        local accepted_uuid = false
         -- Try to match the first line
         -- TODO: maybe "^(.+)$" is better? it matches the first non-empty line
         local title_regex = regex.compile("^(.*)$", "m")
@@ -314,28 +318,42 @@ function copilot.get_completions(server, doc)
               server = server, completion_item = symbol, uuid = symbol.uuid
             },
             onselect = function(_, item)
-              accepted = true
-              local applied = apply_edit(item.data.server, doc, item.data.completion_item, false, true)
+              autocomplete_is_copilot = false
+              accepted_uuid = item.data.uuid
+              apply_edit(item.data.server, doc, item.data.completion_item, false, true)
               server:push_request("notifyAccepted", {
                 params = { uuid = item.data.uuid }
               })
-              return applied
+              return true
             end
           }
         end
 
-        autocomplete.complete(symbols, function()--(doc, item)
-          if not accepted then
-            local uuids = {}
-            for _, sym in pairs(symbols.items) do
+        -- Only use our completions if others are unavailable
+        if autocomplete.is_open() and not autocomplete_is_copilot then
+          -- When the active completion gets dismissed, trigger ours again
+          local old_on_close = autocomplete.on_close
+          autocomplete.on_close = function(...)
+            if old_on_close then old_on_close(...) end
+            copilot.get_timer(doc):restart()
+          end
+          return
+        end
+
+        autocomplete_complete_with_fix(symbols, function()--(doc, item)
+          autocomplete_is_copilot = false
+          local uuids = {}
+          for _, sym in pairs(symbols.items) do
+            if sym.data.uuid and sym.data.uuid ~= accepted_uuid then
               table.insert(uuids, sym.data.uuid)
             end
-            if #uuids == 0 then return end
-            server:push_request("notifyRejected", {
-              params = { uuids = uuids }
-            })
           end
+          if #uuids == 0 then return end
+          server:push_request("notifyRejected", {
+            params = { uuids = uuids }
+          })
         end)
+        autocomplete_is_copilot = true
       end
     })
   end
@@ -457,6 +475,10 @@ command.add(function()
     if not copilot.is_logged_in() then return false end
     return true, doc
   end, {
+  ["copilot:get-completions"] = function(doc)
+    local server = copilot.get_server()
+    copilot.get_completions(server, doc)
+  end,
   ["copilot:get-panel-completions"] = function(doc)
     local server = copilot.get_server()
     copilot.get_panel_completions(server, doc)
