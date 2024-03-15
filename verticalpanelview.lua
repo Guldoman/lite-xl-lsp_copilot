@@ -13,6 +13,8 @@ function VerticalPanelView:new()
   self.cursor = "arrow"
   self.scrollable = true
 
+  self.captured_view = nil
+
   self.views = {}
 end
 
@@ -41,6 +43,11 @@ function VerticalPanelView:add_view(view)
 end
 
 function VerticalPanelView:on_mouse_moved(x, y, ...)
+  if self.captured_view then
+    self.captured_view:on_mouse_moved(x, y, ...)
+    self.cursor = self.captured_view.cursor
+    return
+  end
   self.cursor = "arrow"
   if VerticalPanelView.super.on_mouse_moved(self, x, y, ...) then
     return true
@@ -61,6 +68,7 @@ function VerticalPanelView:on_mouse_pressed(button, x, y, ...)
   end
   for _, v in ipairs(self.views) do
     if v.position.y <= y and v.position.y + v.size.y > y then
+      self.captured_view = v
       core.set_active_view(v)
       v:on_mouse_pressed(button, x, y, ...)
       self.cursor = v.cursor
@@ -71,6 +79,11 @@ end
 
 function VerticalPanelView:on_mouse_released(button, x, y, ...)
   self.cursor = "arrow"
+  if self.captured_view then
+    self.captured_view:on_mouse_released(button, x, y, ...)
+    self.captured_view = nil
+    return
+  end
   if VerticalPanelView.super.on_mouse_released(self, button, x, y, ...) then
     return true
   end
