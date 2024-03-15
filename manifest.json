@@ -3,7 +3,7 @@
     "id": "lsp_copilot",
     "description": "Copilot for Lite XL.",
     "path": ".",
-    "version": "1.25.1",
+    "version": "0.1",
     "files": [
       {
         "url": "https://github.com/github/copilot.vim/archive/refs/tags/v1.25.1.tar.gz",
