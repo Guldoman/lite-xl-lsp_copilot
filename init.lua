@@ -110,7 +110,7 @@ lsp.add_server(common.merge({
   language = "Any",
   file_patterns = { ".*" },
   command = { nodejs.path_bin, installed_path, "--stdio" },
-  verbose = true,
+  verbose = false,
   on_start = function(server)
     server:add_event_listener("initialized", function(_)
       initialized = true
@@ -498,6 +498,36 @@ end, {
       newText = vpv.copilot_response.completionText
     }, nil, true)
   end
+})
+
+local wdt = 0
+local c_id = 0
+command.add(copilot.is_logged_in, {
+  ["copilot:start-chat"] = function()
+    local server = copilot.get_server()
+    wdt = wdt + 1
+    c_id = c_id + 1
+    server:push_request("conversation/create", {
+      params = {
+        workDoneToken = tostring(wdt),
+        conversationId = tostring(c_id),
+        message = "Write hello world 10 times without loops",
+        turns = {
+          {
+            request = "Hi"
+          }
+        },
+        capabilities = {
+          skills = { "chat-panel" }
+        }
+      },
+      overwrite = true,
+      callback = function(_, response)
+        print(common.serialize(response, {pretty = true}))
+      end
+    })
+  end,
+
 })
 
 local doc = require "core.doc"
