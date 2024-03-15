@@ -9,7 +9,6 @@ local Doc = require "core.doc"
 local DocView = require "core.docview"
 
 local autocomplete = require "plugins.autocomplete"
-local translate = require "core.doc.translate"
 
 local Timer = require "plugins.lsp.timer"
 local util = require "plugins.lsp.util"
@@ -100,6 +99,8 @@ local function update_panel_texts(panel_view)
     if not dv then break end
     dv.doc:set_selection(0, 0, math.huge, math.huge)
     dv.doc:text_input(c.completionText)
+    dv.copilot_response = c
+    dv.copilot_original_doc = panel.doc
     core.redraw = true
   end
 end
@@ -389,6 +390,7 @@ function copilot.get_panel_completions(server, doc)
       node:add_view(pdv)
       panel_views[tostring(panel_id)] = pdv
       panels[pdv] = {
+        doc = doc,
         completions = { },
         done = false,
         target = result.solutionCountTarget,
@@ -482,6 +484,19 @@ command.add(function()
   ["copilot:get-panel-completions"] = function(doc)
     local server = copilot.get_server()
     copilot.get_panel_completions(server, doc)
+  end
+})
+
+command.add(function()
+  local av = core.active_view
+  if not av or not av:is(DocView) or not av.copilot_response then return false end
+  return true, av
+end, {
+  ["copilot:accept-panel-solution"] = function(vpv)
+    apply_edit(copilot.get_server(), vpv.copilot_original_doc, {
+      range = vpv.copilot_response.range,
+      newText = vpv.copilot_response.completionText
+    }, nil, true)
   end
 })
 
