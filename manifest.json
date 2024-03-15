@@ -2,7 +2,7 @@
   "addons": [{
     "id": "lsp_copilot",
     "description": "Copilot for Lite XL.",
-    "path": "./init.lua",
+    "path": ".",
     "version": "1.25.1",
     "files": [
       {

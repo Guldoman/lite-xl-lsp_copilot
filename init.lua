@@ -1,9 +1,11 @@
--- mod-version: 3
+-- mod-version:3
+
 local core = require "core"
 local common = require "core.common"
 local config = require "core.config"
 local command = require "core.command"
 
+local Doc = require "core.doc"
 local DocView = require "core.docview"
 
 local autocomplete = require "plugins.autocomplete"
@@ -16,25 +18,30 @@ local Server = require "plugins.lsp.server"
 local lsp = require "plugins.lsp"
 local nodejs = require "libraries.nodejs"
 
+local VerticalPanelView = require "plugins.lsp_copilot.verticalpanelview"
+local LabelView = require "plugins.lsp_copilot.labelview"
+
 local installed_path = USERDIR .. PATHSEP .. "plugins" .. PATHSEP .. "lsp_copilot" .. PATHSEP .. "copilot.vim-1.25.1" .. PATHSEP .. "dist" .. PATHSEP .. "agent.js"
+
+local copilot = {}
 
 local logged_in = false
 local initialized = false
 
 local last_panel_id = 0
----@type table<string, core.docview>
-local panel_docviews = setmetatable({}, {__mode = "v"})
----@type table<core.docview, table>
+---@type table<string, plugins.lsp_copilot.verticalpanelview>
+local panel_views = setmetatable({}, {__mode = "v"})
+---@type table<plugins.lsp_copilot.verticalpanelview, table>
 local panels = setmetatable({}, {__mode = "k"})
 
 local function _check_status(result)
   logged_in = false
-  if result.status == "OK" then
+  if result and result.status == "OK" then
     logged_in = true
   end
 end
 
-local function check_status(server, callback)
+function copilot.check_status(server, callback)
   -- {["result"]={["status"]="NotSignedIn"},["jsonrpc"]="2.0",["id"]=2}
   -- {["result"]={["user"]="User Name",["status"]="OK"},["jsonrpc"]="2.0",["id"]=4}
   server:push_request("checkStatus", {
@@ -47,21 +54,54 @@ local function check_status(server, callback)
   })
 end
 
-local function get_panel_text(panel_data)
-  local text = {}
-  if not panel_data.done then
-    table.insert(text, string.format("%sLoading solutions %d/%d", panel_data.comment, #panel_data.completions, panel_data.target))
-    table.insert(text, string.format("\n%s---------------------------------------------\n\n", panel_data.comment))
+local function update_panel_texts(panel_view)
+  local panel = panels[panel_view]
+
+  while #panel_view.views < #panel.completions * 2 or #panel_view.views < 1 do
+    local v
+    if #panel_view.views % 2 == 0 then
+      v = LabelView()
+    else
+      v = DocView(Doc(nil, nil, true))
+      v.doc.syntax = panel.syntax
+    end
+    panel_view:add_view(v)
   end
-  for i, c in ipairs(panel_data.completions) do
-    table.insert(text, string.format("%sSolution %d - Score %f:\n", panel_data.comment, i, c.score))
-    table.insert(text, c.displayText)
-    table.insert(text, string.format("\n%s---------------------------------------------\n\n", panel_data.comment))
+
+  if panel.done and #panel.completions == 0 then
+    if panel.done == "OK" then
+      panel_view.views[1].text = string.format("No solutions available.", panel.error_message)
+    else
+      panel_view.views[1].text = string.format("No solutions loaded: %s", panel.error_message)
+    end
+    return
   end
-  if panel_data.done then
-    table.insert(text, string.format("%sDone with message %s.", panel_data.comment, panel_data.done))
+
+  for i, c in ipairs(panel.completions) do
+    local l_idx = i * 2 - 1
+    local c_idx = i * 2
+    local label = panel_view.views[l_idx]
+    local dv = panel_view.views[c_idx]
+
+    local text = ""
+    if l_idx == 1 then
+      if panel.done then
+        text = string.format("Loaded all solutions: %s.\n\n", panel.done)
+      else
+        text = string.format("Loading solutions %d/%d...\n\n", #panel.completions, panel.target)
+      end
+    end
+    local score_text = ""
+    if c.score > 0 then
+      score_text = string.format(" - Score %f", c.score)
+    end
+    label.text = string.format("%sSolution %d%s:", text, i, score_text)
+
+    if not dv then break end
+    dv.doc:set_selection(0, 0, math.huge, math.huge)
+    dv.doc:text_input(c.completionText)
+    core.redraw = true
   end
-  return table.concat(text, "\n")
 end
 
 lsp.add_server(common.merge({
@@ -73,7 +113,7 @@ lsp.add_server(common.merge({
   on_start = function(server)
     server:add_event_listener("initialized", function(_)
       initialized = true
-      check_status(server, function(result)
+      copilot.check_status(server, function(result)
         if result.status == "NotSignedIn" then
           core.warn("[LSP/Copilot] Not signed in! Call the command \"Copilot: Sign In\" to begin using Copilot.")
         elseif result.status == "OK" then
@@ -85,10 +125,10 @@ lsp.add_server(common.merge({
     end)
 
     server:add_message_listener("PanelSolution", function(server, response)
-      local dv = panel_docviews[response.panelId]
-      if not dv then return end
+      local pdv = panel_views[response.panelId]
+      if not pdv then return end
 
-      local panel = panels[dv]
+      local panel = panels[pdv]
 
       if panel.done then
         core.warn("[LSP/Copilot] The Panel was marked as done, but more completions arrived.")
@@ -101,39 +141,35 @@ lsp.add_server(common.merge({
       end
 
       table.insert(panel.completions, response)
-
-      local line1, col1 = dv.doc:get_selection()
-      dv.doc:set_selection(0, 0, math.huge, math.huge)
-      dv.doc:text_input(get_panel_text(panel))
-      dv.doc:set_selection(line1, col1)
+      update_panel_texts(pdv)
     end)
 
     server:add_message_listener("PanelSolutionsDone", function(server, response)
-      local dv = panel_docviews[response.panelId]
-      if not dv then return end
+      local pdv = panel_views[response.panelId]
+      if not pdv then return end
 
-      local panel = panels[dv]
+      local panel = panels[pdv]
 
       if panel.done then
         core.warn("[LSP/Copilot] The Panel was marked as done multiple times.")
       end
 
       panel.done = response.status
+      if response.status ~= "OK" then
+        panel.error_message = response.message
+      end
 
-      local line1, col1 = dv.doc:get_selection()
-      dv.doc:set_selection(0, 0, math.huge, math.huge)
-      dv.doc:text_input(get_panel_text(panel))
-      dv.doc:set_selection(line1, col1)
+      update_panel_texts(pdv)
     end)
   end
 }, config.plugins.lsp_copilot or {}))
 
 
-local function get_server()
+function copilot.get_server()
   return lsp.servers_running["copilot.vim"]
 end
 
-local function is_logged_in()
+function copilot.is_logged_in()
   return logged_in
 end
 
@@ -234,7 +270,7 @@ local function get_doc_param(doc, line1, col1)
   }
 end
 
-local function get_completions(server, doc)
+function copilot.get_completions(server, doc)
   if not doc.lsp_open then
     return
   end
@@ -305,7 +341,7 @@ local function get_completions(server, doc)
   end
 end
 
-local function get_panel_completions(server, doc)
+function copilot.get_panel_completions(server, doc)
   local panel_id = last_panel_id + 1
   last_panel_id = last_panel_id + 1
   local line1, col1, _, _ = doc:get_selection()
@@ -329,25 +365,27 @@ local function get_panel_completions(server, doc)
       local result = response.result
       core.log("[LSP/Copilot] Looking for %d completions.", result.solutionCountTarget)
       local node = core.root_view:get_active_node()
-      node:split("right")
-      local dv = core.root_view:open_doc(core.open_doc())
-      dv.doc.syntax = doc.syntax
-      panel_docviews[tostring(panel_id)] = dv
-      panels[dv] = {
+      node = node:split("right")
+      local pdv = VerticalPanelView()
+      pdv.get_name = function() return string.format("Panel - %s", doc.filename) end
+      node:add_view(pdv)
+      panel_views[tostring(panel_id)] = pdv
+      panels[pdv] = {
         completions = { },
         done = false,
         target = result.solutionCountTarget,
-        comment = dv.doc.syntax.comment and dv.doc.syntax.comment .. " " or ""
+        comment = doc.syntax.comment and doc.syntax.comment .. " " or "",
+        syntax = doc.syntax,
+        error_message = ""
       }
-      dv.doc:set_selection(0, 0, math.huge, math.huge)
-      dv.doc:text_input(get_panel_text(panels[dv]))
+      update_panel_texts(pdv)
     end
   })
 end
 
-command.add(function() return initialized and not is_logged_in() end, {
+command.add(function() return initialized and not copilot.is_logged_in() end, {
   ["copilot:sign-in"] = function()
-    local server = get_server()
+    local server = copilot.get_server()
 
     -- {["result"]={["verificationUri"]="https://github.com/login/device",["userCode"]="ABCD-1234",["interval"]=5,["status"]="PromptUserDeviceFlow",["expiresIn"]=899},["jsonrpc"]="2.0",["id"]=3}
     server:push_request("signInInitiate", {
@@ -393,9 +431,9 @@ command.add(function() return initialized and not is_logged_in() end, {
   end
 })
 
-command.add(is_logged_in, {
+command.add(copilot.is_logged_in, {
   ["copilot:sign-out"] = function()
-    local server = get_server()
+    local server = copilot.get_server()
 
     server:push_request("signOut", {
       timeout = 20,
@@ -416,11 +454,12 @@ command.add(function()
     if not av or not av:is(DocView) then return false end
     local doc = av.doc
     if not doc.lsp_open then return false end
+    if not copilot.is_logged_in() then return false end
     return true, doc
   end, {
   ["copilot:get-panel-completions"] = function(doc)
-    local server = get_server()
-    get_panel_completions(server, doc)
+    local server = copilot.get_server()
+    copilot.get_panel_completions(server, doc)
   end
 })
 
@@ -428,13 +467,13 @@ local doc = require "core.doc"
 
 local doc_timers = setmetatable({}, { __mode="k" })
 
-local function get_timer(doc)
+function copilot.get_timer(doc)
   if not doc_timers[doc] then
-    local t = Timer(2 * 1000, true)
+    local t = Timer(100, true)
     doc_timers[doc] = t
     function t:on_timer()
-      if is_logged_in() then
-        get_completions(get_server(), doc)
+      if copilot.is_logged_in() then
+        copilot.get_completions(copilot.get_server(), doc)
       end
     end
   end
@@ -443,19 +482,21 @@ end
 
 local doc_raw_insert = doc.raw_insert
 function doc:raw_insert(...)
-  get_timer(self):restart()
+  copilot.get_timer(self):restart()
   return doc_raw_insert(self, ...)
 end
 
 
 local doc_raw_remove = doc.raw_remove
 function doc:raw_remove(...)
-  get_timer(self):restart()
+  copilot.get_timer(self):restart()
   return doc_raw_remove(self, ...)
 end
 
 local doc_set_selections = doc.set_selections
 function doc:set_selections(...)
-  get_timer(self):restart()
+  copilot.get_timer(self):restart()
 	return doc_set_selections(self, ...)
 end
+
+return copilot
