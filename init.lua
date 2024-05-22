@@ -421,7 +421,7 @@ command.add(function() return initialized and not copilot.is_logged_in() end, {
           suggest = function()
             return {
               string.format("Or manually go to %s and enter code [%s]", uri, code),
-              string.format("Press enter to automatically open you default browser and copy the code"),
+              string.format("Press enter to automatically open your default browser and copy the code"),
             }
           end,
           submit = function()
@@ -498,36 +498,6 @@ end, {
       newText = vpv.copilot_response.completionText
     }, nil, true)
   end
-})
-
-local wdt = 0
-local c_id = 0
-command.add(copilot.is_logged_in, {
-  ["copilot:start-chat"] = function()
-    local server = copilot.get_server()
-    wdt = wdt + 1
-    c_id = c_id + 1
-    server:push_request("conversation/create", {
-      params = {
-        workDoneToken = tostring(wdt),
-        conversationId = tostring(c_id),
-        message = "Write hello world 10 times without loops",
-        turns = {
-          {
-            request = "Hi"
-          }
-        },
-        capabilities = {
-          skills = { "chat-panel" }
-        }
-      },
-      overwrite = true,
-      callback = function(_, response)
-        print(common.serialize(response, {pretty = true}))
-      end
-    })
-  end,
-
 })
 
 local doc = require "core.doc"
