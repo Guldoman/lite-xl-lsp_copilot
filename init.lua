@@ -13,6 +13,7 @@ local autocomplete = require "plugins.autocomplete"
 local Timer = require "plugins.lsp.timer"
 local util = require "plugins.lsp.util"
 local Server = require "plugins.lsp.server"
+local json = require "plugins.lsp.json"
 
 local lsp = require "plugins.lsp"
 local nodejs = require "libraries.nodejs"
@@ -91,14 +92,19 @@ local function update_panel_texts(panel_view)
       end
     end
     local score_text = ""
-    if c.score > 0 then
-      score_text = string.format(" - Score %f", c.score)
+    if c.score then
+      if type(c.score) == "string" and string.find(c.score, json.number_flag, 1, true) == 1 then
+        c.score = tonumber(string.sub(c.score, #json.number_flag + 1))
+      end
+      if type(c.score) == "number" then
+        score_text = string.format(" - Score %f", c.score)
+      end
     end
     label.text = string.format("%sSolution %d%s:", text, i, score_text)
 
     if not dv then break end
     dv.doc:set_selection(0, 0, math.huge, math.huge)
-    dv.doc:text_input(c.completionText)
+    dv.doc:text_input(c.completionText or "")
     dv.copilot_response = c
     dv.copilot_original_doc = panel.doc
     core.redraw = true
