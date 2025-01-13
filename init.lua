@@ -70,11 +70,13 @@ local function update_panel_texts(panel_view)
 
   if panel.done and #panel.completions == 0 then
     if panel.done == "OK" then
-      panel_view.views[1].text = string.format("No solutions available.", panel.error_message)
+      panel_view.views[1].text = string.format("No solutions available.")
     else
       panel_view.views[1].text = string.format("No solutions loaded: %s", panel.error_message)
     end
     return
+  elseif not panel.done and #panel.completions == 0 then
+    panel_view.views[1].text = string.format("Loading %d solutions...", panel.target)
   end
 
   for i, c in ipairs(panel.completions) do
